@@ -67,6 +67,16 @@ cc_library(
     ],
 )
 
+# cc_shared_library doesn't transitively link Rust static libraries
+# from the CXX bridge (the minijinja template engine). Use cc_binary
+# with linkshared which handles all transitive deps correctly.
+cc_binary(
+    name = "libengine_shared.dylib",
+    deps = [":engine"],
+    linkshared = True,
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "engine_cpu",
     srcs = [
