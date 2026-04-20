@@ -538,6 +538,14 @@ cc_library(
             "@litert//litert/cc:litert_environment",
             "@litert//litert/cc:litert_environment_options",
         ],
+    }) + select({
+        "@platforms//os:ios": [
+            "//runtime/core:metal_handles_ios",
+            "@litert//litert/c:litert_any",
+            "@litert//litert/c:litert_environment",
+            "@litert//litert/c:litert_environment_options",
+        ],
+        "//conditions:default": [],
     }),
 )
 

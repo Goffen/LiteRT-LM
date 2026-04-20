@@ -14,6 +14,17 @@
 
 #include "runtime/util/litert_util.h"
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <CoreFoundation/CoreFoundation.h>
+#include "litert/c/litert_any.h"  // from @litert
+#include "litert/c/litert_environment.h"  // from @litert
+#include "litert/c/litert_environment_options.h"  // from @litert
+#include "runtime/core/metal_handles_ios.h"
+#endif  // TARGET_OS_IPHONE
+#endif  // __APPLE__
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -63,6 +74,33 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
         }
       }
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+      // On iOS, point the LiteRT runtime library directory at the app
+      // bundle's Frameworks/ directory so dlopen-based accelerator
+      // loading (e.g. libLiteRtMetalAccelerator.dylib) can find them.
+      {
+        CFBundleRef bundle = CFBundleGetMainBundle();
+        if (bundle) {
+          CFURLRef bundle_url = CFBundleCopyBundleURL(bundle);
+          if (bundle_url) {
+            char path[PATH_MAX];
+            if (CFURLGetFileSystemRepresentation(
+                    bundle_url, true, reinterpret_cast<UInt8*>(path),
+                    PATH_MAX)) {
+              static const absl::NoDestructor<std::string> kFrameworksPath(
+                  std::string(path) + "/Frameworks");
+              ABSL_LOG(INFO) << "Setting runtime library dir: "
+                             << *kFrameworksPath;
+              env_options.push_back(::litert::EnvironmentOptions::Option{
+                  ::litert::EnvironmentOptions::Tag::kRuntimeLibraryDir,
+                  absl::string_view(*kFrameworksPath)});
+            }
+            CFRelease(bundle_url);
+          }
+        }
+      }
+#endif  // __APPLE__ && TARGET_OS_IPHONE
+
 #if !defined(LITERT_DISABLE_NPU)
       if (!main_executor_settings.GetLitertDispatchLibDir().empty()) {
         // If the dispatch library directory is provided, use it.
@@ -110,6 +148,34 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
 
       LITERT_ASSIGN_OR_RETURN(
           auto env, Environment::Create(EnvironmentOptions(env_options)));
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+      // Workaround for LiteRT #6745: the prebuilt Metal accelerator
+      // creates MTLDevice/MTLCommandQueue without ARC during
+      // Environment::Create, causing premature release. Overwrite with
+      // ARC-retained handles so subsequent operations (weight upload,
+      // inference) use stable objects. No backend guard — the GPU
+      // accelerator auto-registers even when backend isn't explicitly
+      // GPU.
+      {
+        void* metal_device = LiteRtLmGetMetalDevice();
+        void* metal_queue = LiteRtLmGetMetalCommandQueue();
+        if (metal_device && metal_queue) {
+          LiteRtEnvOption metal_opts[2];
+          metal_opts[0] = {
+              kLiteRtEnvOptionTagMetalDevice,
+              {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_device}}};
+          metal_opts[1] = {
+              kLiteRtEnvOptionTagMetalCommandQueue,
+              {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_queue}}};
+          LiteRtAddEnvironmentOptions(env.Get(), 2, metal_opts,
+                                      /*overwrite=*/true);
+          ABSL_LOG(INFO) << "Injected ARC-retained Metal handles";
+        } else {
+          ABSL_LOG(WARNING) << "Metal handles NULL: device=" << metal_device
+                            << " queue=" << metal_queue;
+        }
+      }
+#endif  // __APPLE__ && TARGET_OS_IPHONE
       return std::move(env);
     }();
     it = kEnvironments->emplace(backend, std::move(env_res)).first;
