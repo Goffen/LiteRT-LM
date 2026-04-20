@@ -67,12 +67,23 @@ cc_library(
     ],
 )
 
+# Suppress LLVM InstrProfiling runtime file-writing. The Rust stdlib links
+# profiler_builtins whose constructor writes default.profraw at launch.
+# The iOS sandbox denies this write, causing SIGABRT. This library runs a
+# high-priority constructor that empties the filename before the profiling
+# runtime initializes.
+cc_library(
+    name = "disable_profiling",
+    srcs = ["disable_profiling.c"],
+    alwayslink = True,
+)
+
 # cc_shared_library doesn't transitively link Rust static libraries
 # from the CXX bridge (the minijinja template engine). Use cc_binary
 # with linkshared which handles all transitive deps correctly.
 cc_binary(
     name = "libengine_shared.dylib",
-    deps = [":engine"],
+    deps = [":engine", ":disable_profiling"],
     linkshared = True,
     visibility = ["//visibility:public"],
 )
