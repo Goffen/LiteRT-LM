@@ -16,6 +16,8 @@
 
 #include <cstddef>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 #include <memory>
 #include <optional>
 #include <string>
@@ -372,13 +374,6 @@ LiteRtLmEngineSettings* litert_lm_engine_settings_create(
     return nullptr;
   }
 
-  if (*backend == litert::lm::Backend::GPU) {
-    // Enforce floating point precision for better quality.
-    auto& executor_settings = engine_settings->GetMutableMainExecutorSettings();
-    executor_settings.SetActivationDataType(
-        litert::lm::ActivationDataType::FLOAT32);
-  }
-
   auto* c_settings = new LiteRtLmEngineSettings;
   c_settings->settings =
       std::make_unique<EngineSettings>(*std::move(engine_settings));
@@ -408,6 +403,16 @@ void litert_lm_engine_settings_set_cache_dir(LiteRtLmEngineSettings* settings,
                                              const char* cache_dir) {
   if (settings && settings->settings) {
     settings->settings->GetMutableMainExecutorSettings().SetCacheDir(cache_dir);
+    // Propagate to vision/audio so XNNPACK can mmap its weight cache from disk
+    // instead of malloc'ing (critical on memory-constrained iOS devices).
+    auto& vis = settings->settings->GetMutableVisionExecutorSettings();
+    if (vis.has_value()) {
+      vis->SetCacheDir(cache_dir);
+    }
+    auto& aud = settings->settings->GetMutableAudioExecutorSettings();
+    if (aud.has_value()) {
+      aud->SetCacheDir(cache_dir);
+    }
   }
 }
 
@@ -474,17 +479,28 @@ LiteRtLmEngine* litert_lm_engine_create(
     return nullptr;
   }
 
-  absl::StatusOr<std::unique_ptr<Engine>> engine =
-      EngineFactory::CreateDefault(*settings->settings);
+  try {
+    absl::StatusOr<std::unique_ptr<Engine>> engine =
+        EngineFactory::CreateDefault(*settings->settings);
 
-  if (!engine.ok()) {
-    ABSL_LOG(ERROR) << "Failed to create engine: " << engine.status();
+    if (!engine.ok()) {
+      ABSL_LOG(ERROR) << "Failed to create engine: " << engine.status();
+      return nullptr;
+    }
+
+    auto* c_engine = new LiteRtLmEngine;
+    c_engine->engine = *std::move(engine);
+    return c_engine;
+  } catch (const std::bad_alloc& e) {
+    ABSL_LOG(ERROR) << "Engine creation failed (out of memory): " << e.what();
+    return nullptr;
+  } catch (const std::exception& e) {
+    ABSL_LOG(ERROR) << "Engine creation failed: " << e.what();
+    return nullptr;
+  } catch (...) {
+    ABSL_LOG(ERROR) << "Engine creation failed (unknown exception)";
     return nullptr;
   }
-
-  auto* c_engine = new LiteRtLmEngine;
-  c_engine->engine = *std::move(engine);
-  return c_engine;
 }
 
 void litert_lm_engine_delete(LiteRtLmEngine* engine) { delete engine; }
