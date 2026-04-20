@@ -969,7 +969,12 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::BindTensorsAndRunDecode(
     decode_output_buffers[output_name] = std::move(output_buffer_dup);
   }
 
-  bool async = true;
+  // Metal buffers do not support async execution yet (b/494284915,
+  // LiteRT#6798). Mirror the guard from the prefill path.
+  bool has_metal = std::any_of(
+      decode_input_buffers.begin(), decode_input_buffers.end(),
+      [](const auto& pair) { return pair.second.IsMetalMemory(); });
+  bool async = !has_metal;
   LITERT_RETURN_IF_ERROR(
       compiled_model_.RunAsync(kDecodeSignatureRunner, decode_input_buffers,
                                decode_output_buffers, async));

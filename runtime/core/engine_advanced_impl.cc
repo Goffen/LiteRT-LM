@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include "litert/c/litert_any.h"  // from @litert
+#include "litert/c/litert_environment.h"  // from @litert
+#include "litert/c/litert_environment_options.h"  // from @litert
+#include "runtime/core/metal_handles_ios.h"
+#endif  // TARGET_OS_IPHONE
+#endif  // __APPLE__
+
 // TODO(b/417209286): Remove this once the model assets are stored in the
 // litertlm file format.
 #include <filesystem>  // NOLINT: Required for path manipulation.
@@ -117,6 +127,26 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
 #endif  // defined(LITERT_DISABLE_NPU)
         }
         LITERT_ASSIGN_OR_RETURN(auto env, Environment::Create(env_options));
+#if TARGET_OS_IPHONE
+        // Workaround for LiteRT #6745: the prebuilt Metal accelerator creates
+        // MTLDevice/MTLCommandQueue without ARC during Environment::Create,
+        // causing premature release. Overwrite with ARC-retained handles so
+        // subsequent operations (weight upload, inference) use stable objects.
+        if (main_executor_settings.GetBackend() == Backend::GPU) {
+          void* metal_device = LiteRtLmGetMetalDevice();
+          void* metal_queue = LiteRtLmGetMetalCommandQueue();
+          if (metal_device && metal_queue) {
+            LiteRtEnvOption metal_opts[2];
+            metal_opts[0] = {kLiteRtEnvOptionTagMetalDevice,
+                            {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_device}}};
+            metal_opts[1] = {kLiteRtEnvOptionTagMetalCommandQueue,
+                            {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_queue}}};
+            LiteRtAddEnvironmentOptions(env.Get(), 2, metal_opts,
+                                        /*overwrite=*/true);
+            ABSL_LOG(INFO) << "Injected ARC-retained Metal device and queue";
+          }
+        }
+#endif  // TARGET_OS_IPHONE
         return std::move(env);
       }());
   if (!kEnvironment->ok()) {

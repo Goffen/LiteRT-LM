@@ -2,10 +2,10 @@
 
 workspace(name = "litert_lm")
 
-# UPDATED = 2026-04-01
-LITERT_REF = "9c46795ad4e2308bdecfc2c9a50a0d8f1bee2407"
+# UPDATED = 2026-04-19 (includes 36ab4fc: Metal accelerator dynamic-linking fix)
+LITERT_REF = "b5d47c827a4944cc71c31c5e05b5702cf5868d45"
 
-LITERT_SHA256 = "ff77f9f013fc060b5789038cf57277c81912631ae0e92f20b5be79e648d0a9e3"
+LITERT_SHA256 = "b9e114c93bf053e399201f076e19246adbb09f3343eefb19c211797d9f78f72b"
 
 TENSORFLOW_REF = "a0e9f40e19baea842d15e4aa4477e1c586e03ce2"
 
