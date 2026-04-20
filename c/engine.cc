@@ -16,6 +16,8 @@
 
 #include <cstddef>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 #include <memory>
 #include <optional>
 #include <string>
@@ -537,17 +539,28 @@ LiteRtLmEngine* litert_lm_engine_create(
     return nullptr;
   }
 
-  absl::StatusOr<std::unique_ptr<Engine>> engine =
-      EngineFactory::CreateDefault(*settings->settings);
+  try {
+    absl::StatusOr<std::unique_ptr<Engine>> engine =
+        EngineFactory::CreateDefault(*settings->settings);
 
-  if (!engine.ok()) {
-    ABSL_LOG(ERROR) << "Failed to create engine: " << engine.status();
+    if (!engine.ok()) {
+      ABSL_LOG(ERROR) << "Failed to create engine: " << engine.status();
+      return nullptr;
+    }
+
+    auto* c_engine = new LiteRtLmEngine;
+    c_engine->engine = *std::move(engine);
+    return c_engine;
+  } catch (const std::bad_alloc& e) {
+    ABSL_LOG(ERROR) << "Engine creation failed (out of memory): " << e.what();
+    return nullptr;
+  } catch (const std::exception& e) {
+    ABSL_LOG(ERROR) << "Engine creation failed: " << e.what();
+    return nullptr;
+  } catch (...) {
+    ABSL_LOG(ERROR) << "Engine creation failed (unknown exception)";
     return nullptr;
   }
-
-  auto* c_engine = new LiteRtLmEngine;
-  c_engine->engine = *std::move(engine);
-  return c_engine;
 }
 
 void litert_lm_engine_delete(LiteRtLmEngine* engine) { delete engine; }
