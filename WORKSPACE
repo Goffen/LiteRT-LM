@@ -374,9 +374,14 @@ http_archive(
 
 http_archive(
     name = "litert",
+    patches = [
+    ],
+    patch_args = ["-p1"],
     patch_cmds = [
         # Replace @//third_party with @litert//third_party in files under third_party/.
         "sed -i -e 's|\"@//third_party/|\"@litert//third_party/|g' third_party/*/*",
+        # Patch gpu_registry.cc: @rpath fallback, build marker, error logging.
+        "python3 /Users/goff/github/LiteRT-LM/patches/patch_gpu_registry.py",
     ],
     sha256 = LITERT_SHA256,
     strip_prefix = "LiteRT-" + LITERT_REF,

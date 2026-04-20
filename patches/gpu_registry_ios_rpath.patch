@@ -1,0 +1,57 @@
+--- a/litert/runtime/accelerators/gpu_registry.cc
++++ b/litert/runtime/accelerators/gpu_registry.cc
+@@ -15,6 +15,10 @@
+ 
+ #include "litert/runtime/accelerators/gpu_registry.h"
+ 
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
++
+ #include <filesystem>  // NOLINT
+ #include <string>
+ #include <utility>
+@@ -155,6 +159,14 @@
+   if (option.has_value() && option->type == kLiteRtAnyTypeString) {
+     runtime_lib_path = option->str_value;
+   }
++#if TARGET_OS_IPHONE
++  // On iOS, dlopen with bare filenames fails because DYLD_LIBRARY_PATH is
++  // restricted by the sandbox. Use @rpath/ prefix which dlopen resolves via
++  // the app binary's LC_RPATH entries (typically @executable_path/Frameworks).
++  if (runtime_lib_path.empty()) {
++    runtime_lib_path = "@rpath";
++  }
++  LITERT_LOG(LITERT_INFO, "[build:4] runtime_lib_path=%s", runtime_lib_path.c_str());
++#endif
+   for (auto plugin_path : kGpuAcceleratorLibs) {
+     std::filesystem::path full_plugin_path =
+         std::filesystem::path(runtime_lib_path) / std::string(plugin_path);
+@@ -166,12 +178,18 @@
+         /*try_default_on_failure=*/false);
+     if (registration.HasValue()) {
+       LITERT_LOG(LITERT_INFO,
+                  "Dynamically loaded GPU accelerator(%s) registered.",
+                  plugin_path.data());
+       return kLiteRtStatusOk;
+     }
++    LITERT_LOG(LITERT_WARNING,
++               "AcceleratorDef registration failed for %s: %s",
++               full_plugin_path.c_str(), registration.Error().Message().c_str());
+     // Try to load a GPU accelerator using `LiteRtRegisterGpuAccelerator`
+     // symbol.
+     registration = RegisterSharedObjectAcceleratorViaFunctionPointer(
+         environment, full_plugin_path.string(), "LiteRtRegisterGpuAccelerator",
+         /*try_default_on_failure=*/true);
+     if (registration.HasValue()) {
+       LITERT_LOG(LITERT_INFO,
+@@ -179,6 +197,9 @@
+                  plugin_path.data());
+       return kLiteRtStatusOk;
+     }
++    LITERT_LOG(LITERT_WARNING,
++               "FunctionPointer registration failed for %s: %s",
++               full_plugin_path.c_str(), registration.Error().Message().c_str());
+   }
+ 
+   LITERT_LOG(LITERT_WARNING,
