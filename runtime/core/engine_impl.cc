@@ -12,10 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include "litert/c/litert_any.h"                 // from @litert
+#include "litert/c/litert_environment.h"         // from @litert
+#include "litert/c/litert_environment_options.h" // from @litert
+#include "runtime/core/metal_handles_ios.h"
+#include <CoreFoundation/CoreFoundation.h>
+#endif // TARGET_OS_IPHONE
+#endif // __APPLE__
 // TODO(b/417209286): Remove this once the model assets are stored in the
 // litertlm file format.
-#include <filesystem>  // NOLINT: Required for path manipulation.
-#include <future>      // NOLINT(build/c++11)
+#include <filesystem> // NOLINT: Required for path manipulation.
+#include <future>     // NOLINT(build/c++11)
 #include <memory>
 #include <optional>
 #include <string>
@@ -65,8 +75,8 @@ namespace {
 // with the provided settings. This ensure we maintain the same LiteRT
 // environment during the whole application lifetime. This is required for GPU
 // LiteRT environment. See b/454383477 for more details.
-absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
-                                            ModelResources& model_resources) {
+absl::StatusOr<Environment &> GetEnvironment(EngineSettings &engine_settings,
+                                             ModelResources &model_resources) {
   // Helper must be available until LlmLiteRtCompiledModelExecutor::Create() is
   // called. Since env is used multiple times, it should also be static.
   static absl::NoDestructor<MagicNumberConfigsHelper> helper;
@@ -84,12 +94,39 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
         if ((main_executor_settings.GetBackend() == Backend::CPU) ||
             (main_executor_settings.GetBackend() == Backend::GPU)) {
           if (!main_executor_settings
-                   .GetAdvancedSettings() ||  // Default is true.
+                   .GetAdvancedSettings() || // Default is true.
               main_executor_settings.GetAdvancedSettings()
                   ->configure_magic_numbers) {
             env_options = helper->GetLiteRtEnvOptions(model_resources,
                                                       main_executor_settings);
           }
+
+      // On iOS, set the runtime library directory to the app bundle's
+      // Frameworks/ directory so that dynamically loaded accelerators
+      // (e.g., Metal) can be found by dlopen.
+#if TARGET_OS_IPHONE
+          {
+            CFBundleRef bundle = CFBundleGetMainBundle();
+            if (bundle) {
+              CFURLRef bundle_url = CFBundleCopyBundleURL(bundle);
+              if (bundle_url) {
+                char path[PATH_MAX];
+                if (CFURLGetFileSystemRepresentation(
+                        bundle_url, true, reinterpret_cast<UInt8 *>(path),
+                        PATH_MAX)) {
+                  static const absl::NoDestructor<std::string> kFrameworksPath(
+                      std::string(path) + "/Frameworks");
+                  ABSL_LOG(INFO) << "Setting runtime library dir: "
+                                 << *kFrameworksPath;
+                  env_options.push_back(::litert::EnvironmentOptions::Option{
+                      ::litert::EnvironmentOptions::Tag::kRuntimeLibraryDir,
+                      absl::string_view(*kFrameworksPath)});
+                }
+                CFRelease(bundle_url);
+              }
+            }
+          }
+#endif // TARGET_OS_IPHONE
         } else {
 #if defined(LITERT_DISABLE_NPU)
           return absl::InvalidArgumentError(
@@ -122,10 +159,34 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
               ABSL_LOG(INFO) << "No dispatch library path provided.";
             }
           }
-#endif  // defined(LITERT_DISABLE_NPU)
+#endif // defined(LITERT_DISABLE_NPU)
         }
         LITERT_ASSIGN_OR_RETURN(
             auto env, Environment::Create(EnvironmentOptions(env_options)));
+#if TARGET_OS_IPHONE
+        // Workaround for LiteRT #6745: overwrite the delegate's Metal
+        // handles with our ARC-retained ones. No backend guard — the GPU
+        // accelerator auto-registers even when backend isn't explicitly GPU.
+        {
+          void* metal_device = LiteRtLmGetMetalDevice();
+          void* metal_queue = LiteRtLmGetMetalCommandQueue();
+          if (metal_device && metal_queue) {
+            LiteRtEnvOption metal_opts[2];
+            metal_opts[0] = {
+                kLiteRtEnvOptionTagMetalDevice,
+                {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_device}}};
+            metal_opts[1] = {
+                kLiteRtEnvOptionTagMetalCommandQueue,
+                {kLiteRtAnyTypeVoidPtr, {.ptr_value = metal_queue}}};
+            LiteRtAddEnvironmentOptions(env.Get(), 2, metal_opts,
+                                        /*overwrite=*/true);
+            ABSL_LOG(INFO) << "Injected ARC-retained Metal handles";
+          } else {
+            ABSL_LOG(WARNING) << "Metal handles NULL: device=" << metal_device
+                              << " queue=" << metal_queue;
+          }
+        }
+#endif  // TARGET_OS_IPHONE
         return std::move(env);
       }());
   if (!kEnvironment->ok()) {
@@ -135,7 +196,7 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
 }
 
 class EngineImpl : public Engine {
- public:
+public:
   ~EngineImpl() override {
     auto status = WaitUntilDone(Engine::kDefaultTimeout);
     if (!status.ok()) {
@@ -143,8 +204,9 @@ class EngineImpl : public Engine {
     }
   }
 
-  static absl::StatusOr<std::unique_ptr<Engine>> Create(
-      EngineSettings engine_settings, absl::string_view input_prompt_as_hint);
+  static absl::StatusOr<std::unique_ptr<Engine>>
+  Create(EngineSettings engine_settings,
+         absl::string_view input_prompt_as_hint);
 
   EngineImpl(EngineSettings engine_settings,
              std::unique_ptr<ModelResources> litert_model_resources,
@@ -156,17 +218,14 @@ class EngineImpl : public Engine {
              std::unique_ptr<ThreadPool> worker_thread_pool)
       : engine_settings_(std::move(engine_settings)),
         litert_model_resources_(std::move(litert_model_resources)),
-        tokenizer_(std::move(tokenizer)),
-        executor_(std::move(executor)),
+        tokenizer_(std::move(tokenizer)), executor_(std::move(executor)),
         vision_executor_(std::move(vision_executor)),
-        audio_executor_(std::move(audio_executor)),
-        stop_token_ids_(),
-        sampler_params_(),
-        benchmark_info_(std::move(benchmark_info)),
+        audio_executor_(std::move(audio_executor)), stop_token_ids_(),
+        sampler_params_(), benchmark_info_(std::move(benchmark_info)),
         worker_thread_pool_(std::move(worker_thread_pool)) {}
   // Method to create the Session.
-  absl::StatusOr<std::unique_ptr<Session>> CreateSession(
-      const SessionConfig& session_config) override {
+  absl::StatusOr<std::unique_ptr<Session>>
+  CreateSession(const SessionConfig &session_config) override {
     std::optional<BenchmarkInfo> session_benchmark_info;
     if (benchmark_info_.has_value()) {
       // Each session will have its own benchmark info, which will be populated
@@ -205,29 +264,29 @@ class EngineImpl : public Engine {
     return worker_thread_pool_->WaitUntilDone(timeout);
   }
 
-  const EngineSettings& GetEngineSettings() const override {
+  const EngineSettings &GetEngineSettings() const override {
     return engine_settings_;
   }
 
-  const Tokenizer& GetTokenizer() const override { return *tokenizer_; }
+  const Tokenizer &GetTokenizer() const override { return *tokenizer_; }
 
-  absl::StatusOr<AudioExecutorProperties> GetAudioExecutorProperties()
-      const override {
+  absl::StatusOr<AudioExecutorProperties>
+  GetAudioExecutorProperties() const override {
     if (audio_executor_ == nullptr) {
       return absl::FailedPreconditionError("Audio modality is not enabled.");
     }
     return audio_executor_->GetAudioExecutorProperties();
   }
 
-  absl::StatusOr<VisionExecutorProperties> GetVisionExecutorProperties()
-      const override {
+  absl::StatusOr<VisionExecutorProperties>
+  GetVisionExecutorProperties() const override {
     if (vision_executor_ == nullptr) {
       return absl::FailedPreconditionError("Vision modality is not enabled.");
     }
     return vision_executor_->GetVisionExecutorProperties();
   }
 
- private:
+private:
   // Stored engine settings.
   EngineSettings engine_settings_;
   // Model resources, which must outlive `executor_`.
@@ -252,8 +311,9 @@ class EngineImpl : public Engine {
 };
 
 // Method to create Engine.
-absl::StatusOr<std::unique_ptr<Engine>> EngineImpl::Create(
-    EngineSettings engine_settings, absl::string_view input_prompt_as_hint) {
+absl::StatusOr<std::unique_ptr<Engine>>
+EngineImpl::Create(EngineSettings engine_settings,
+                   absl::string_view input_prompt_as_hint) {
   std::optional<BenchmarkInfo> benchmark_info =
       engine_settings.IsBenchmarkEnabled()
           ? std::make_optional<BenchmarkInfo>(
@@ -266,7 +326,7 @@ absl::StatusOr<std::unique_ptr<Engine>> EngineImpl::Create(
     RETURN_IF_ERROR(benchmark_info->TimeInitPhaseStart(
         BenchmarkInfo::InitPhase::kModelAssets));
   }
-  const auto& model_assets =
+  const auto &model_assets =
       engine_settings.GetMutableMainExecutorSettings().GetModelAssets();
   ASSIGN_OR_RETURN(auto model_resources,
                    BuildLiteRtCompiledModelResources(model_assets));
@@ -279,7 +339,7 @@ absl::StatusOr<std::unique_ptr<Engine>> EngineImpl::Create(
     RETURN_IF_ERROR(benchmark_info->TimeInitPhaseStart(
         BenchmarkInfo::InitPhase::kLlmMetadata));
   }
-  ASSIGN_OR_RETURN(auto* llm_metadata, model_resources->GetLlmMetadata());
+  ASSIGN_OR_RETURN(auto *llm_metadata, model_resources->GetLlmMetadata());
   if (benchmark_info.has_value()) {
     RETURN_IF_ERROR(benchmark_info->TimeInitPhaseEnd(
         BenchmarkInfo::InitPhase::kLlmMetadata));
@@ -357,15 +417,15 @@ absl::StatusOr<std::unique_ptr<Engine>> EngineImpl::Create(
         BenchmarkInfo::InitPhase::kExecutor));
   }
   std::unique_ptr<LlmExecutor> executor;
-  ASSIGN_OR_RETURN(auto& env,
+  ASSIGN_OR_RETURN(auto &env,
                    GetEnvironment(engine_settings, *model_resources));
 
   switch (main_executor_settings.GetBackend()) {
-    default: {
-      ASSIGN_OR_RETURN(executor,
-                       CreateLlmLiteRtCompiledModelExecutor(
-                           main_executor_settings, env, *model_resources));
-    }
+  default: {
+    ASSIGN_OR_RETURN(
+        executor, CreateLlmLiteRtCompiledModelExecutor(main_executor_settings,
+                                                       env, *model_resources));
+  }
   };
 
   // TODO - b/436674053: Modularize the executor creation logic into a
@@ -443,5 +503,5 @@ LITERT_LM_REGISTER_ENGINE(EngineFactory::EngineType::kLiteRTCompiledModel,
                             return EngineImpl::Create(std::move(settings),
                                                       input_prompt_as_hint);
                           });
-}  // namespace
-}  // namespace litert::lm
+} // namespace
+} // namespace litert::lm

@@ -91,6 +91,15 @@ ENGINE_IMPL_COMMON_DEPS = [
     ],
 })
 
+# ARC-retained Metal device/queue handles for iOS. Works around the premature
+# release bug in the prebuilt libLiteRtMetalAccelerator.dylib (LiteRT #6745).
+objc_library(
+    name = "metal_handles_ios",
+    srcs = ["metal_handles_ios.mm"],
+    hdrs = ["metal_handles_ios.h"],
+    sdk_frameworks = ["Metal"],
+)
+
 cc_library(
     name = "engine_impl",
     srcs = ["engine_impl.cc"],
@@ -99,6 +108,10 @@ cc_library(
         "//runtime/components:default_static_gpu_samplers",
         "//runtime/executor:default_static_gpu_accelerator",
     ] + select({
+        "@platforms//os:ios": [
+            ":metal_handles_ios",
+            "@litert//litert/c:litert_environment",
+        ],
         "//conditions:default": [],
     }),
     alwayslink = 1,
