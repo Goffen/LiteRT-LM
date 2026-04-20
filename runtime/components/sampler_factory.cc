@@ -235,6 +235,9 @@ class TopKCApiSampler : public Sampler {
   absl::Status UpdateConfig(
       const proto::SamplerParameters& sampler_params, int batch_size,
       std::shared_ptr<std::default_random_engine> rand_gen) override {
+    if (!capi_->update_config_func) {
+      return absl::OkStatus();  // No-op when symbol not available.
+    }
     char* error_msg = nullptr;
     int error_code = capi_->update_config_func(
         sampler_, &sampler_params, batch_size, &rand_gen, &error_msg);
@@ -283,7 +286,7 @@ class TopKCApiSampler : public Sampler {
   static absl::StatusOr<std::unique_ptr<TopKSamplerCApi>> GetSamplerCApi(
       const char* lib_name, const char* create_func_name,
       const char* destroy_func_name, const char* sample_func_name,
-      const char* update_config_func_name,
+      const char* update_config_func_name = nullptr,
       const char* can_handle_input_func_name = nullptr,
       const char* handles_input_func_name = nullptr,
       const char* set_input_tensors_func_name = nullptr) {
@@ -304,38 +307,45 @@ class TopKCApiSampler : public Sampler {
         auto sampler_sample_func,
         lib.LookupSymbol<LiteRtTopKSampler_SampleToIdAndScoreBuffer>(
             sample_func_name));
-    LITERT_ASSIGN_OR_RETURN(auto sampler_update_config_func,
-                            lib.LookupSymbol<LiteRtTopKSampler_UpdateConfig>(
-                                update_config_func_name));
     RET_CHECK_NE(sampler_sample_func, nullptr)
         << "Failed to load " << sample_func_name;
 
+    LiteRtTopKSampler_UpdateConfig sampler_update_config_func = nullptr;
+    if (update_config_func_name != nullptr) {
+      auto update_config_or =
+          lib.LookupSymbol<LiteRtTopKSampler_UpdateConfig>(
+              update_config_func_name);
+      if (update_config_or.HasValue()) {
+        sampler_update_config_func = *update_config_or;
+      }
+    }
     LiteRtTopKSampler_CanHandleInput sampler_can_handle_input_func = nullptr;
     if (can_handle_input_func_name != nullptr) {
-      LITERT_ASSIGN_OR_RETURN(
-          sampler_can_handle_input_func,
+      auto can_handle_or =
           lib.LookupSymbol<LiteRtTopKSampler_CanHandleInput>(
-              can_handle_input_func_name));
-      RET_CHECK_NE(sampler_can_handle_input_func, nullptr)
-          << "Failed to load " << can_handle_input_func_name;
+              can_handle_input_func_name);
+      if (can_handle_or.HasValue()) {
+        sampler_can_handle_input_func = *can_handle_or;
+      }
     }
     LiteRtTopKSampler_HandlesInput sampler_handles_input_func = nullptr;
     if (handles_input_func_name != nullptr) {
-      LITERT_ASSIGN_OR_RETURN(sampler_handles_input_func,
-                              lib.LookupSymbol<LiteRtTopKSampler_HandlesInput>(
-                                  handles_input_func_name));
-      RET_CHECK_NE(sampler_handles_input_func, nullptr)
-          << "Failed to load " << handles_input_func_name;
+      auto handles_or =
+          lib.LookupSymbol<LiteRtTopKSampler_HandlesInput>(
+              handles_input_func_name);
+      if (handles_or.HasValue()) {
+        sampler_handles_input_func = *handles_or;
+      }
     }
     LiteRtTopKSampler_SetInputTensorsAndInferenceFunc
         sampler_set_input_tensors_func = nullptr;
     if (set_input_tensors_func_name != nullptr) {
-      LITERT_ASSIGN_OR_RETURN(
-          sampler_set_input_tensors_func,
+      auto set_input_or =
           lib.LookupSymbol<LiteRtTopKSampler_SetInputTensorsAndInferenceFunc>(
-              set_input_tensors_func_name));
-      RET_CHECK_NE(sampler_set_input_tensors_func, nullptr)
-          << "Failed to load " << set_input_tensors_func_name;
+              set_input_tensors_func_name);
+      if (set_input_or.HasValue()) {
+        sampler_set_input_tensors_func = *set_input_or;
+      }
     }
 
     return std::make_unique<TopKSamplerCApi>(
