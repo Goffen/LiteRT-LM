@@ -5,14 +5,24 @@
 
 #include "runtime/core/metal_handles_ios.h"
 
-// ---------------------------------------------------------------------------
-// Workaround for LiteRT Metal GPU delegate crash on iOS.
+// ---------- Workaround for LiteRT Metal GPU delegate crash on iOS.
 //
 // Two problems in the prebuilt libLiteRtMetalAccelerator.dylib:
 //
 // 1. ARC bridge lifetime (LiteRT issue #6745):
 //    The delegate bridges MTLCommandQueue to void* for C++. ARC releases the
-//    ObjC object; the void* dangles. Fix: CFRetain on newCommandQueue.
+//    ObjC object; the void* dangles.
+//
+//    Fix: swizzle [MTLDevice newCommandQueue] (and the WithMax variant) to
+//    return ONE shared, ARC-retained command queue instead of creating a new
+//    one per caller. Three benefits:
+//      a) The bridged void* is backed by a long-lived object — no dangle.
+//      b) Matches the single queue we inject into the LiteRT Environment via
+//         LiteRtAddEnvironmentOptions; every caller sees the same handle.
+//      c) Prevents the iOS 200-queue kernel cap (IOGPUCommandQueue) from being
+//         hit by vision runs, samplers, or other Metal components that call
+//         newCommandQueue directly. Metal allows unlimited concurrent command
+//         buffers per queue, so sharing is safe.
 //
 // 2. Nil buffer in blit during tensor init:
 //    InitializeExternalSharedConstantTensors calls WriteDataToBuffer for
@@ -40,18 +50,31 @@ static IMP g_orig_newCommandQueueWithMax = NULL;
 static IMP g_orig_copyFromBuffer = NULL;
 
 // ---------- Command queue swizzles (problem 1) ----------
+//
+// Both swizzles return the shared g_queue so every caller reuses a single,
+// ARC-retained MTLCommandQueue. During ensureInitialized(), g_queue is nil
+// while we create the discovery queue / the queue itself — fall through to
+// the original IMP in that bootstrap window.
+//
+// Ownership: newCommandQueue is in the `new` family and returns a +1
+// reference. We CFRetain g_queue before returning so each caller's ARC
+// release balances, keeping g_queue alive for the lifetime of the process.
 
 static id swizzled_newCommandQueue(id self, SEL _cmd) {
-  id q = ((id (*)(id, SEL))g_orig_newCommandQueue)(self, _cmd);
-  if (q) CFRetain((__bridge CFTypeRef)q);
-  return q;
+  if (g_queue) {
+    CFRetain((__bridge CFTypeRef)g_queue);
+    return g_queue;
+  }
+  return ((id (*)(id, SEL))g_orig_newCommandQueue)(self, _cmd);
 }
 
 static id swizzled_newCommandQueueWithMax(id self, SEL _cmd, NSUInteger count) {
-  id q = ((id (*)(id, SEL, NSUInteger))g_orig_newCommandQueueWithMax)(
+  if (g_queue) {
+    CFRetain((__bridge CFTypeRef)g_queue);
+    return g_queue;
+  }
+  return ((id (*)(id, SEL, NSUInteger))g_orig_newCommandQueueWithMax)(
       self, _cmd, count);
-  if (q) CFRetain((__bridge CFTypeRef)q);
-  return q;
 }
 
 // ---------- Blit encoder swizzle (problem 2) ----------
