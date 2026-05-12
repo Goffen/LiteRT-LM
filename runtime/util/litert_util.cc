@@ -16,12 +16,12 @@
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
-#if TARGET_OS_IPHONE
-#include <CoreFoundation/CoreFoundation.h>
 #include "litert/c/litert_any.h"  // from @litert
 #include "litert/c/litert_environment.h"  // from @litert
 #include "litert/c/litert_environment_options.h"  // from @litert
 #include "runtime/core/metal_handles_ios.h"
+#if TARGET_OS_IPHONE
+#include <CoreFoundation/CoreFoundation.h>
 #endif  // TARGET_OS_IPHONE
 #endif  // __APPLE__
 
@@ -148,14 +148,17 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
 
       LITERT_ASSIGN_OR_RETURN(
           auto env, Environment::Create(EnvironmentOptions(env_options)));
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-      // Workaround for LiteRT #6745: the prebuilt Metal accelerator
-      // creates MTLDevice/MTLCommandQueue without ARC during
-      // Environment::Create, causing premature release. Overwrite with
-      // ARC-retained handles so subsequent operations (weight upload,
-      // inference) use stable objects. No backend guard — the GPU
-      // accelerator auto-registers even when backend isn't explicitly
-      // GPU.
+#ifdef __APPLE__
+      // Inject ARC-retained Metal device + command queue on all Apple
+      // platforms (macOS and iOS):
+      //  - iOS: workaround for LiteRT #6745 (premature ARC release of
+      //    bridged MTLCommandQueue handles).
+      //  - macOS: signals sampler_factory.cc to prefer the Metal sampler
+      //    over WebGPU (without kMetalDevice set, on Apple/non-iOS the
+      //    WebGPU sampler is chosen, which currently SIGSEGVs when MTP
+      //    is enabled).
+      // No backend guard — the GPU accelerator auto-registers even when
+      // backend isn't explicitly GPU.
       {
         void* metal_device = LiteRtLmGetMetalDevice();
         void* metal_queue = LiteRtLmGetMetalCommandQueue();
@@ -175,7 +178,7 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
                             << " queue=" << metal_queue;
         }
       }
-#endif  // __APPLE__ && TARGET_OS_IPHONE
+#endif  // __APPLE__
       return std::move(env);
     }();
     it = kEnvironments->emplace(backend, std::move(env_res)).first;

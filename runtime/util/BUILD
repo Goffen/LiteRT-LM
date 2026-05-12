@@ -545,6 +545,12 @@ cc_library(
             "@litert//litert/c:litert_environment",
             "@litert//litert/c:litert_environment_options",
         ],
+        "@platforms//os:osx": [
+            "//runtime/core:metal_handles_ios",
+            "@litert//litert/c:litert_any",
+            "@litert//litert/c:litert_environment",
+            "@litert//litert/c:litert_environment_options",
+        ],
         "//conditions:default": [],
     }),
 )
