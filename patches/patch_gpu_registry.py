@@ -50,7 +50,44 @@ new_try2 = """\
     // symbol."""
 t = t.replace(old_try2, new_try2, 1)
 
-# 4. Add error logging after FunctionPointer registration attempt
+# 4b. On non-iOS Apple (macOS), the upstream order in
+# kGpuAcceleratorLibs is WebGPU → OpenCL → Metal, so WebGPU wins the
+# first-success break (line ~124) and Metal never loads. Re-order so
+# Metal is tried first on Apple — required for MTP+sampler to work
+# (WebGPU + MTP SIGSEGVs in v0.11.0).
+old_macos_order = """\
+#else  // !__ANDROID__ && !TARGET_OS_IPHONE
+#if LITERT_HAS_WEBGPU_SUPPORT
+      "libLiteRtWebGpuAccelerator" SO_EXT,
+#endif  // LITERT_HAS_WEBGPU_SUPPORT
+#if LITERT_HAS_OPENCL_SUPPORT
+      "libLiteRtOpenClAccelerator" SO_EXT,
+#endif  // LITERT_HAS_OPENCL_SUPPORT
+#if LITERT_HAS_METAL_SUPPORT
+      "libLiteRtMetalAccelerator" SO_EXT,
+#endif  // LITERT_HAS_METAL_SUPPORT
+#endif  // !__ANDROID__ && !TARGET_OS_IPHONE"""
+new_macos_order = """\
+#else  // !__ANDROID__ && !TARGET_OS_IPHONE
+#if defined(__APPLE__) && LITERT_HAS_METAL_SUPPORT
+      "libLiteRtMetalAccelerator" SO_EXT,
+#endif  // __APPLE__ && LITERT_HAS_METAL_SUPPORT
+#if LITERT_HAS_WEBGPU_SUPPORT
+      "libLiteRtWebGpuAccelerator" SO_EXT,
+#endif  // LITERT_HAS_WEBGPU_SUPPORT
+#if LITERT_HAS_OPENCL_SUPPORT
+      "libLiteRtOpenClAccelerator" SO_EXT,
+#endif  // LITERT_HAS_OPENCL_SUPPORT
+#if !defined(__APPLE__) && LITERT_HAS_METAL_SUPPORT
+      "libLiteRtMetalAccelerator" SO_EXT,
+#endif  // !__APPLE__ && LITERT_HAS_METAL_SUPPORT
+#endif  // !__ANDROID__ && !TARGET_OS_IPHONE"""
+if old_macos_order not in t:
+    print("ERROR: macOS accelerator-order block not found", file=sys.stderr)
+    sys.exit(1)
+t = t.replace(old_macos_order, new_macos_order, 1)
+
+# 5. Add error logging after FunctionPointer registration attempt
 old_end = """\
     }
   }

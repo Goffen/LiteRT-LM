@@ -112,6 +112,10 @@ cc_library(
             ":metal_handles_ios",
             "@litert//litert/c:litert_environment",
         ],
+        "@platforms//os:osx": [
+            ":metal_handles_ios",
+            "@litert//litert/c:litert_environment",
+        ],
         "//conditions:default": [],
     }),
     alwayslink = 1,
