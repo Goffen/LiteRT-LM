@@ -101,9 +101,16 @@ absl::StatusOr<Environment &> GetEnvironment(EngineSettings &engine_settings,
                                                       main_executor_settings);
           }
 
-      // On iOS, set the runtime library directory to the app bundle's
-      // Frameworks/ directory so that dynamically loaded accelerators
-      // (e.g., Metal) can be found by dlopen.
+      // On iOS, set the runtime library directory to a dedicated
+      // .framework subdirectory under the app bundle's Frameworks/.
+      // App Store distribution rejects loose .dylib files in Frameworks/
+      // (only .framework bundles are permitted; see Apple TN2435), so
+      // dlopen-able accelerators (libLiteRtMetalAccelerator.dylib and
+      // friends) get bundled inside `LiteRtAccelerators.framework` —
+      // Apple allows .dylib files *inside* a framework — and the runtime
+      // library dir is pointed there so the LiteRT dlopen finds them at
+      // the new path. The build pipeline that packages the IPA is
+      // responsible for assembling that framework directory.
 #if TARGET_OS_IPHONE
           {
             CFBundleRef bundle = CFBundleGetMainBundle();
@@ -115,7 +122,8 @@ absl::StatusOr<Environment &> GetEnvironment(EngineSettings &engine_settings,
                         bundle_url, true, reinterpret_cast<UInt8 *>(path),
                         PATH_MAX)) {
                   static const absl::NoDestructor<std::string> kFrameworksPath(
-                      std::string(path) + "/Frameworks");
+                      std::string(path) +
+                      "/Frameworks/LiteRtAccelerators.framework");
                   ABSL_LOG(INFO) << "Setting runtime library dir: "
                                  << *kFrameworksPath;
                   env_options.push_back(::litert::EnvironmentOptions::Option{
