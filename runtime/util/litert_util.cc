@@ -22,6 +22,7 @@
 #include "runtime/core/metal_handles_ios.h"
 #if TARGET_OS_IPHONE
 #include <CoreFoundation/CoreFoundation.h>
+#include <sys/stat.h>
 #endif  // TARGET_OS_IPHONE
 #endif  // __APPLE__
 
@@ -83,8 +84,12 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
       // friends) get bundled inside `LiteRtAccelerators.framework` —
       // Apple allows .dylib files *inside* a framework — and the runtime
       // library dir is pointed there so the LiteRT dlopen finds them at
-      // the new path. The build pipeline that packages the IPA is
-      // responsible for assembling that framework directory.
+      // the new path. The TestFlight pipeline assembles that framework
+      // directory; dev distribution leaves loose .dylib files in
+      // Frameworks/. We check whether the framework dir actually exists
+      // at runtime — if not, we leave runtime_lib_path unset so the
+      // @rpath fallback in our patched gpu_registry.cc kicks in
+      // (@executable_path/Frameworks via the app binary's LC_RPATH).
       {
         CFBundleRef bundle = CFBundleGetMainBundle();
         if (bundle) {
@@ -94,14 +99,24 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
             if (CFURLGetFileSystemRepresentation(
                     bundle_url, true, reinterpret_cast<UInt8*>(path),
                     PATH_MAX)) {
-              static const absl::NoDestructor<std::string> kFrameworksPath(
-                  std::string(path) +
-                  "/Frameworks/LiteRtAccelerators.framework");
-              ABSL_LOG(INFO) << "Setting runtime library dir: "
-                             << *kFrameworksPath;
-              env_options.push_back(::litert::EnvironmentOptions::Option{
-                  ::litert::EnvironmentOptions::Tag::kRuntimeLibraryDir,
-                  absl::string_view(*kFrameworksPath)});
+              std::string fw_path = std::string(path) +
+                  "/Frameworks/LiteRtAccelerators.framework";
+              struct stat sb;
+              if (::stat(fw_path.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
+                static const absl::NoDestructor<std::string> kFrameworksPath(
+                    std::move(fw_path));
+                ABSL_LOG(INFO) << "Setting runtime library dir: "
+                               << *kFrameworksPath;
+                env_options.push_back(::litert::EnvironmentOptions::Option{
+                    ::litert::EnvironmentOptions::Tag::kRuntimeLibraryDir,
+                    absl::string_view(*kFrameworksPath)});
+              } else {
+                ABSL_LOG(INFO) << "LiteRtAccelerators.framework not present at "
+                               << fw_path
+                               << "; leaving runtime library dir unset "
+                                  "(gpu_registry.cc @rpath fallback handles "
+                                  "loose Frameworks/ dylibs).";
+              }
             }
             CFRelease(bundle_url);
           }
