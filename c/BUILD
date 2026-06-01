@@ -116,3 +116,28 @@ cc_test(
         "//runtime/executor:llm_executor_settings",
     ],
 )
+
+# === Added: shared-library target for litert-lm-rs / external Rust consumers.
+# Upstream v0.12.0 only exposes the engine as a cc_library; this wraps it
+# into a cc_binary(linkshared=True) so non-bazel consumers can link the
+# engine + C API as a single .dylib / .so. (Apple gets the same shape via
+# the official CLiteRTLM xcframework; this gives Android parity.)
+# cc_shared_library doesn't transitively link the Rust static libs from the
+# CXX bridge (minijinja template engine); cc_binary with linkshared does.
+cc_library(
+    name = "disable_profiling",
+    srcs = ["disable_profiling.c"],
+    alwayslink = True,
+)
+
+# Suppress LLVM InstrProfiling runtime file-writing. The Rust stdlib links
+# profiler_builtins whose constructor writes default.profraw at launch.
+# The iOS sandbox denies this write, causing SIGABRT. The disable_profiling
+# library above runs a high-priority constructor that empties the filename
+# before the profiling runtime initializes.
+cc_binary(
+    name = "libengine_shared.dylib",
+    deps = [":engine", ":disable_profiling"],
+    linkshared = True,
+    visibility = ["//visibility:public"],
+)
